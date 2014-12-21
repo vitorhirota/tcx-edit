@@ -24,6 +24,8 @@ def _update_lap_info(lap):
         return reduce(operator.sub, distances)
     track = lap.find('./Track', namespaces=ns)
     lap.set('StartTime', track[0].find('./ts:Time', namespaces=ns).text)
+    totaltime = len(track) - 1,
+    distance = __calculate_distance()
     hrm = map(int, track.xpath('.//ts:HeartRateBpm/ts:Value/text()', namespaces=ns))
     speed = map(float, track.xpath('//g:Speed/text()', namespaces=ns))
     elements = ['./ts:TotalTimeSeconds',
@@ -33,13 +35,13 @@ def _update_lap_info(lap):
                 './ts:AverageHeartRateBpm/ts:Value',
                 './ts:MaximumHeartRateBpm/ts:Value',
                 './/g:AvgSpeed']
-    values = [len(track) - 1,
-              __calculate_distance(),
+    values = [totaltime,
+              distance,
               max(speed),
               lap.find('./ts:Calories', namespaces=ns).text, # replicate calories info
               sum(hrm)//len(hrm),
               max(hrm),
-              sum(speed)/len(speed)]
+              distance/totaltime]
     for e, v in zip(elements, values):
         lap.find(e, namespaces=ns).text = str(v)
 
@@ -47,7 +49,6 @@ def split_at(tcx, arguments):
     parser = etree.XMLParser(remove_blank_text=True)
     tree = etree.parse(tcx, parser)
     root = tree.getroot()
-    activity = root.xpath('./ts:Activities/ts:Activity', namespaces=ns)[0]
     for i in arguments:
         try:
             hh, mm, ss = map(int, i.split(':'))
@@ -85,7 +86,59 @@ def split_at(tcx, arguments):
 
 
 def merge(tcx, arguments):
-    pass
+    parser = etree.XMLParser(remove_blank_text=True)
+    tree = etree.parse(tcx, parser)
+    root = tree.getroot()
+    laps = root.findall('.//ts:Lap', namespaces=ns)
+    for i in arguments:
+        try:
+            begin, end = map(int, i.split('-'))
+        except:
+            print 'ERROR: merge arguments should be in n1-n2 format, where n1',
+            print 'is the begining lap index and n2 is the end lap index to be',
+            print 'merge.'
+            print 'Failed argument: %s' % i
+        _laps_list = laps[slice(begin-1, end)]
+        mergedlap = _laps_list[0]
+        track = mergedlap.find('./ts:Track', namespaces=ns)
+        # merge trackpoints
+        _laps_elm = etree.Element('laps')
+        for l in _laps_list:
+            # build a element with laps list to use xpath statements
+            _laps_elm.append(copy.deepcopy(l))
+            for t in l.findall('.//ts:Trackpoint', namespaces=ns):
+                track.append(t)
+        # move avg speed to the end
+        track.append(track.find('./ts:Extensions', namespaces=ns))
+        # update lap info
+        elements = ['./ts:TotalTimeSeconds',
+                    './ts:DistanceMeters',
+                    './ts:MaximumSpeed',
+                    './ts:Calories',
+                    './ts:AverageHeartRateBpm/ts:Value',
+                    './ts:MaximumHeartRateBpm/ts:Value',
+                    './/g:AvgSpeed']
+        speed = map(float, _laps_elm.xpath('.//g:Speed/text()', namespaces=ns))
+        hrm = map(int, _laps_elm.xpath('.//ts:HeartRateBpm//ts:Value/text()', namespaces=ns))
+        totaltime = int(_laps_elm.xpath('count(.//ts:Trackpoint)', namespaces=ns))
+        distance = float(_laps_elm.xpath('sum(./*/ts:DistanceMeters/text())', namespaces=ns))
+        values = [totaltime,
+                  distance,
+                  max(speed),
+                  int(_laps_elm.xpath('sum(.//ts:Calories/text())', namespaces=ns)),
+                  sum(hrm)/len(hrm),
+                  max(hrm),
+                  distance/totaltime]
+        for e, v in zip(elements, values):
+            mergedlap.find(e, namespaces=ns).text = str(v)
+        # remove laps
+        activity = root.find('./*/ts:Activity', namespaces=ns)
+        for l in _laps_list[1:]:
+            activity.remove(l)
+    # save xml
+    new_tcx = tcx.replace('.tcx', '-edit.tcx')
+    tree.write(new_tcx, pretty_print=True, encoding="UTF-8", xml_declaration=True)
+    print 'Done!'
 
 parser = argparse.ArgumentParser(description='Edit TCX files.')
 parser.add_argument('tcx_file', help='what file to edit')
